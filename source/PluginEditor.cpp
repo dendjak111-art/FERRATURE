@@ -254,3 +254,268 @@ void SimpleMidiKeyboard::mouseDrag (const juce::MouseEvent& e)
         activeNote = note;
         if (activeNote >= 0)
             keyboardState.noteOn (1, activeNote, 0.9f);
+        repaint();
+    }
+}
+
+void SimpleMidiKeyboard::mouseUp (const juce::MouseEvent&)
+{
+    if (activeNote >= 0)
+    {
+        keyboardState.noteOff (1, activeNote, 0.0f);
+        activeNote = -1;
+        repaint();
+    }
+}
+
+//==============================================================================
+// KnobControl & BoxControl
+//==============================================================================
+void KnobControl::init (juce::Component& parent,
+                        juce::AudioProcessorValueTreeState& apvts,
+                        const juce::String& paramID,
+                        const juce::String& name)
+{
+    slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 52, 14);
+    slider.setColour (juce::Slider::textBoxTextColourId, Colors::textDim);
+    slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    parent.addAndMakeVisible (slider);
+
+    label.setText (name, juce::dontSendNotification);
+    label.setJustificationType (juce::Justification::centred);
+    label.setFont (juce::Font (11.0f, juce::Font::bold));
+    label.setColour (juce::Label::textColourId, Colors::textMain);
+    parent.addAndMakeVisible (label);
+
+    attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, paramID, slider);
+}
+
+void KnobControl::setBounds (juce::Rectangle<int> area)
+{
+    label.setBounds (area.removeFromTop (15));
+    slider.setBounds (area);
+}
+
+void BoxControl::init (juce::Component& parent,
+                       juce::AudioProcessorValueTreeState& apvts,
+                       const juce::String& paramID,
+                       const juce::String& name)
+{
+    if (auto* param = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (paramID)))
+    {
+        box.addItemList (param->choices, 1);
+    }
+    parent.addAndMakeVisible (box);
+
+    label.setText (name, juce::dontSendNotification);
+    label.setJustificationType (juce::Justification::centred);
+    label.setFont (juce::Font (11.0f, juce::Font::bold));
+    parent.addAndMakeVisible (label);
+
+    attachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (apvts, paramID, box);
+}
+
+void BoxControl::setBounds (juce::Rectangle<int> area)
+{
+    label.setBounds (area.removeFromTop (15));
+    box.setBounds (area.reduced (4, 6));
+}
+
+//==============================================================================
+// FerratureAudioProcessorEditor
+//==============================================================================
+FerratureAudioProcessorEditor::FerratureAudioProcessorEditor (FerratureAudioProcessor& p)
+    : AudioProcessorEditor (&p),
+      audioProcessor (p),
+      scope (p),
+      oscAPreview (p.getWavetableBank(), p.apvts.getRawParameterValue (ParamIDs::oscA_wave)),
+      oscBPreview (p.getWavetableBank(), p.apvts.getRawParameterValue (ParamIDs::oscB_wave)),
+      midiKeyboard (p.keyboardState)
+{
+    setLookAndFeel (&customLookAndFeel);
+
+    auto& apvts = audioProcessor.apvts;
+
+    addAndMakeVisible (presetBox);
+    presetBox.onChange = [this]
+    {
+        if (presetBox.getSelectedId() > 0)
+            audioProcessor.loadPreset (presetBox.getText());
+    };
+    refreshPresetBox();
+
+    addAndMakeVisible (savePresetBtn);
+    savePresetBtn.onClick = [this] { savePresetDialog(); };
+
+    addAndMakeVisible (initPresetBtn);
+    initPresetBtn.onClick = [this]
+    {
+        audioProcessor.initPreset();
+        presetBox.setText ("Init", juce::dontSendNotification);
+    };
+
+    addAndMakeVisible (loadSampleBtn);
+    loadSampleBtn.onClick = [this] { loadSampleDialog(); };
+
+    addAndMakeVisible (clearSampleBtn);
+    clearSampleBtn.onClick = [this]
+    {
+        audioProcessor.clearSample();
+        sampleNameLabel.setText ("No sample loaded", juce::dontSendNotification);
+    };
+
+    addAndMakeVisible (sampleNameLabel);
+    sampleNameLabel.setJustificationType (juce::Justification::centredLeft);
+    sampleNameLabel.setColour (juce::Label::textColourId, Colors::accent);
+    auto currentSmp = audioProcessor.getLoadedSampleName();
+    sampleNameLabel.setText (currentSmp.isEmpty() ? "No sample loaded" : currentSmp, juce::dontSendNotification);
+
+    addAndMakeVisible (scope);
+    addAndMakeVisible (oscAPreview);
+    addAndMakeVisible (oscBPreview);
+
+    // OSC A
+    oscAWave.init (*this, apvts, ParamIDs::oscA_wave, "Wave");
+    oscAOct.init (*this, apvts, ParamIDs::oscA_oct, "Octave");
+    oscAUni.init (*this, apvts, ParamIDs::oscA_uni, "Unison");
+    oscADetune.init (*this, apvts, ParamIDs::oscA_detune, "Detune");
+    oscAPan.init (*this, apvts, ParamIDs::oscA_pan, "Pan");
+    oscALevel.init (*this, apvts, ParamIDs::oscA_level, "Level");
+
+    // OSC B
+    oscBWave.init (*this, apvts, ParamIDs::oscB_wave, "Wave");
+    oscBOct.init (*this, apvts, ParamIDs::oscB_oct, "Octave");
+    oscBUni.init (*this, apvts, ParamIDs::oscB_uni, "Unison");
+    oscBDetune.init (*this, apvts, ParamIDs::oscB_detune, "Detune");
+    oscBPan.init (*this, apvts, ParamIDs::oscB_pan, "Pan");
+    oscBLevel.init (*this, apvts, ParamIDs::oscB_level, "Level");
+
+    // Sampler
+    smpLevel.init (*this, apvts, ParamIDs::smp_level, "Level");
+    smpStart.init (*this, apvts, ParamIDs::smp_start, "Start");
+    smpEnd.init (*this, apvts, ParamIDs::smp_end, "End");
+    smpRoot.init (*this, apvts, ParamIDs::smp_root, "Root");
+    addAndMakeVisible (smpLoopBtn);
+    smpLoopAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (apvts, ParamIDs::smp_loop, smpLoopBtn);
+
+    // Filter
+    fltType.init (*this, apvts, ParamIDs::flt_type, "Type");
+    fltCutoff.init (*this, apvts, ParamIDs::flt_cutoff, "Cutoff");
+    fltRes.init (*this, apvts, ParamIDs::flt_res, "Reso");
+    fltDrive.init (*this, apvts, ParamIDs::flt_drive, "Drive");
+    fltEnvAmt.init (*this, apvts, ParamIDs::flt_envamt, "Env Amt");
+
+    // Amp Envelope
+    aenvA.init (*this, apvts, ParamIDs::aenv_a, "Attack");
+    aenvD.init (*this, apvts, ParamIDs::aenv_d, "Decay");
+    aenvS.init (*this, apvts, ParamIDs::aenv_s, "Sustain");
+    aenvR.init (*this, apvts, ParamIDs::aenv_r, "Release");
+
+    // Filter Envelope
+    fenvA.init (*this, apvts, ParamIDs::fenv_a, "Attack");
+    fenvD.init (*this, apvts, ParamIDs::fenv_d, "Decay");
+    fenvS.init (*this, apvts, ParamIDs::fenv_s, "Sustain");
+    fenvR.init (*this, apvts, ParamIDs::fenv_r, "Release");
+
+    // LFO
+    lfoShape.init (*this, apvts, ParamIDs::lfo_shape, "Shape");
+    lfoDest.init (*this, apvts, ParamIDs::lfo_dest, "Dest");
+    lfoRate.init (*this, apvts, ParamIDs::lfo_rate, "Rate");
+    lfoDepth.init (*this, apvts, ParamIDs::lfo_depth, "Depth");
+
+    // FX
+    chorusRate.init (*this, apvts, ParamIDs::fx_chorus_rate, "Ch Rate");
+    chorusDepth.init (*this, apvts, ParamIDs::fx_chorus_depth, "Ch Depth");
+    chorusMix.init (*this, apvts, ParamIDs::fx_chorus_mix, "Ch Mix");
+
+    delayTime.init (*this, apvts, ParamIDs::fx_delay_time, "Dl Time");
+    delayFb.init (*this, apvts, ParamIDs::fx_delay_fb, "Dl Fb");
+    delayMix.init (*this, apvts, ParamIDs::fx_delay_mix, "Dl Mix");
+
+    reverbSize.init (*this, apvts, ParamIDs::fx_reverb_size, "Rv Size");
+    reverbDamp.init (*this, apvts, ParamIDs::fx_reverb_damp, "Rv Damp");
+    reverbMix.init (*this, apvts, ParamIDs::fx_reverb_mix, "Rv Mix");
+
+    // Master
+    masterGain.init (*this, apvts, ParamIDs::master_gain, "MASTER");
+
+    // Клавиатура
+    addAndMakeVisible (midiKeyboard);
+
+    setSize (1040, 680);
+    startTimerHz (30);
+}
+
+FerratureAudioProcessorEditor::~FerratureAudioProcessorEditor()
+{
+    stopTimer();
+    setLookAndFeel (nullptr);
+}
+
+void FerratureAudioProcessorEditor::timerCallback()
+{
+    scope.repaint();
+    oscAPreview.repaint();
+    oscBPreview.repaint();
+}
+
+void FerratureAudioProcessorEditor::refreshPresetBox()
+{
+    presetBox.clear (juce::dontSendNotification);
+    auto names = audioProcessor.getPresetNames();
+    int id = 1;
+    for (const auto& name : names)
+        presetBox.addItem (name, id++);
+
+    presetBox.setText (audioProcessor.getCurrentPresetName(), juce::dontSendNotification);
+}
+
+void FerratureAudioProcessorEditor::loadSampleDialog()
+{
+    fileChooser = std::make_unique<juce::FileChooser> (
+        "Select Audio Sample",
+        juce::File::getSpecialLocation (juce::File::userMusicDirectory),
+        "*.wav;*.aif;*.aiff;*.mp3;*.flac");
+
+    auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+
+    fileChooser->launchAsync (flags, [this] (const juce::FileChooser& fc)
+    {
+        auto file = fc.getResult();
+        if (file.existsAsFile() && audioProcessor.loadSample (file, true))
+        {
+            sampleNameLabel.setText (audioProcessor.getLoadedSampleName(), juce::dontSendNotification);
+        }
+    });
+}
+
+void FerratureAudioProcessorEditor::savePresetDialog()
+{
+    auto* alert = new juce::AlertWindow ("Save Preset", "Enter preset name:", juce::MessageBoxIconType::NoIcon);
+    alert->addTextEditor ("name", audioProcessor.getCurrentPresetName(), "Name:");
+    alert->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    alert->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    alert->enterModalState (true, juce::ModalCallbackFunction::create ([this, alert] (int result)
+    {
+        if (result == 1)
+        {
+            auto name = alert->getTextEditorContents ("name").trim();
+            if (name.isNotEmpty() && audioProcessor.savePreset (name))
+                refreshPresetBox();
+        }
+        delete alert;
+    }), true);
+}
+
+void FerratureAudioProcessorEditor::paint (juce::Graphics& g)
+{
+    g.fillAll (Colors::bgDark);
+
+    auto drawSection = [&] (juce::Rectangle<int> bounds, const juce::String& title)
+    {
+        auto f = bounds.toFloat();
+        g.setColour (Colors::panelBg);
+        g.fillRoundedRectangle (f, 6.0f);
+        g.setColour (Colors::panelBorder);
