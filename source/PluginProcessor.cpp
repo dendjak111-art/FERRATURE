@@ -786,7 +786,7 @@ juce::File FerratureAudioProcessor::getPresetDirectory()
     return dir;
 }
 
-juce::StringArray FerratureAudioProcessor::getPresetNames() const
+juce::StringArray FerratureAudioProcessor::getPresetNames()
 {
     juce::StringArray names;
     for (const auto& f : getPresetDirectory().findChildFiles (juce::File::findFiles, false, "*.ferrature"))
