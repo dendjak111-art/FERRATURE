@@ -5,8 +5,8 @@ namespace Colors
     const juce::Colour bgDark      = juce::Colour (0xff12141a);
     const juce::Colour panelBg     = juce::Colour (0xff1b1f29);
     const juce::Colour panelBorder = juce::Colour (0xff2c3344);
-    const juce::Colour accent      = juce::Colour (0xff38bdf8); // Голубой неон
-    const juce::Colour accentAlt   = juce::Colour (0xffa855f7); // Фиолетовый акцент
+    const juce::Colour accent      = juce::Colour (0xff38bdf8);
+    const juce::Colour accentAlt   = juce::Colour (0xffa855f7);
     const juce::Colour textMain    = juce::Colour (0xfff1f5f9);
     const juce::Colour textDim     = juce::Colour (0xff94a3b8);
 }
@@ -39,17 +39,14 @@ void FerratureLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, in
     auto arcRadius = radius - lineW * 0.5f;
     auto centre = bounds.getCentre();
 
-    // Внутренний круг ручки
     g.setColour (Colors::bgDark);
     g.fillEllipse (centre.x - radius + 4.0f, centre.y - radius + 4.0f, (radius - 4.0f) * 2.0f, (radius - 4.0f) * 2.0f);
 
-    // Фоновая дуга
     juce::Path backgroundArc;
     backgroundArc.addCentredArc (centre.x, centre.y, arcRadius, arcRadius, 0.0f, rotaryStartAngle, rotaryEndAngle, true);
     g.setColour (Colors::panelBorder);
     g.strokePath (backgroundArc, juce::PathStrokeType (lineW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
-    // Активная дуга
     if (sliderPos > 0.0f)
     {
         juce::Path valueArc;
@@ -58,7 +55,6 @@ void FerratureLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, in
         g.strokePath (valueArc, juce::PathStrokeType (lineW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
-    // Указатель на ручке
     juce::Path thumb;
     auto thumbLength = radius * 0.55f;
     thumb.addRoundedRectangle (-1.5f, -radius + 5.0f, 3.0f, thumbLength, 1.5f);
@@ -160,86 +156,101 @@ void OscilloscopeView::paint (juce::Graphics& g)
 }
 
 //==============================================================================
-// KnobControl & BoxControl
+// SimpleMidiKeyboard
 //==============================================================================
-void KnobControl::init (juce::Component& parent,
-                        juce::AudioProcessorValueTreeState& apvts,
-                        const juce::String& paramID,
-                        const juce::String& name)
+SimpleMidiKeyboard::SimpleMidiKeyboard (juce::MidiKeyboardState& state)
+    : keyboardState (state)
 {
-    slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 52, 14);
-    slider.setColour (juce::Slider::textBoxTextColourId, Colors::textDim);
-    slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-    parent.addAndMakeVisible (slider);
-
-    label.setText (name, juce::dontSendNotification);
-    label.setJustificationType (juce::Justification::centred);
-    label.setFont (juce::Font (11.0f, juce::Font::bold));
-    label.setColour (juce::Label::textColourId, Colors::textMain);
-    parent.addAndMakeVisible (label);
-
-    attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, paramID, slider);
 }
 
-void KnobControl::setBounds (juce::Rectangle<int> area)
+void SimpleMidiKeyboard::paint (juce::Graphics& g)
 {
-    label.setBounds (area.removeFromTop (15));
-    slider.setBounds (area);
-}
+    auto bounds = getLocalBounds().toFloat();
+    const int numWhiteKeys = numOctaves * 7;
+    const float whiteW = bounds.getWidth() / (float) numWhiteKeys;
+    const int whiteOffsets[7] = { 0, 2, 4, 5, 7, 9, 11 };
 
-void BoxControl::init (juce::Component& parent,
-                       juce::AudioProcessorValueTreeState& apvts,
-                       const juce::String& paramID,
-                       const juce::String& name)
-{
-    if (auto* param = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (paramID)))
+    // Белые клавиши
+    for (int i = 0; i < numWhiteKeys; ++i)
     {
-        box.addItemList (param->choices, 1);
+        int note = startNote + (i / 7) * 12 + whiteOffsets[i % 7];
+        auto keyRect = juce::Rectangle<float> (i * whiteW, 0.0f, whiteW, bounds.getHeight()).reduced (0.5f);
+        g.setColour (note == activeNote ? Colors::accent : juce::Colour (0xffe2e8f0));
+        g.fillRoundedRectangle (keyRect, 2.0f);
+        g.setColour (Colors::bgDark);
+        g.drawRoundedRectangle (keyRect, 2.0f, 1.0f);
     }
-    parent.addAndMakeVisible (box);
 
-    label.setText (name, juce::dontSendNotification);
-    label.setJustificationType (juce::Justification::centred);
-    label.setFont (juce::Font (11.0f, juce::Font::bold));
-    parent.addAndMakeVisible (label);
+    // Черные клавиши
+    const int blackSemis[5] = { 1, 3, 6, 8, 10 };
+    const float blackPos[5] = { 0.65f, 1.65f, 3.65f, 4.65f, 5.65f };
+    const float blackW = whiteW * 0.62f;
+    const float blackH = bounds.getHeight() * 0.62f;
 
-    attachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (apvts, paramID, box);
+    for (int oct = 0; oct < numOctaves; ++oct)
+    {
+        for (int b = 0; b < 5; ++b)
+        {
+            int note = startNote + oct * 12 + blackSemis[b];
+            float x = (oct * 7 + blackPos[b]) * whiteW;
+            auto keyRect = juce::Rectangle<float> (x, 0.0f, blackW, blackH);
+            g.setColour (note == activeNote ? Colors::accentAlt : juce::Colour (0xff0f172a));
+            g.fillRoundedRectangle (keyRect, 2.0f);
+            g.setColour (Colors::panelBorder);
+            g.drawRoundedRectangle (keyRect, 2.0f, 1.0f);
+        }
+    }
 }
 
-void BoxControl::setBounds (juce::Rectangle<int> area)
+int SimpleMidiKeyboard::noteAtPosition (juce::Point<float> pos) const
 {
-    label.setBounds (area.removeFromTop (15));
-    box.setBounds (area.reduced (4, 6));
+    auto bounds = getLocalBounds().toFloat();
+    if (! bounds.contains (pos))
+        return -1;
+
+    const int numWhiteKeys = numOctaves * 7;
+    const float whiteW = bounds.getWidth() / (float) numWhiteKeys;
+    const float blackW = whiteW * 0.62f;
+    const float blackH = bounds.getHeight() * 0.62f;
+    const int blackSemis[5] = { 1, 3, 6, 8, 10 };
+    const float blackPos[5] = { 0.65f, 1.65f, 3.65f, 4.65f, 5.65f };
+
+    if (pos.y <= blackH)
+    {
+        for (int oct = 0; oct < numOctaves; ++oct)
+        {
+            for (int b = 0; b < 5; ++b)
+            {
+                float x = (oct * 7 + blackPos[b]) * whiteW;
+                if (pos.x >= x && pos.x <= x + blackW)
+                    return startNote + oct * 12 + blackSemis[b];
+            }
+        }
+    }
+
+    const int whiteOffsets[7] = { 0, 2, 4, 5, 7, 9, 11 };
+    int whiteIdx = juce::jlimit (0, numWhiteKeys - 1, (int) (pos.x / whiteW));
+    return startNote + (whiteIdx / 7) * 12 + whiteOffsets[whiteIdx % 7];
 }
 
-//==============================================================================
-// FerratureAudioProcessorEditor
-//==============================================================================
-FerratureAudioProcessorEditor::FerratureAudioProcessorEditor (FerratureAudioProcessor& p)
-    : AudioProcessorEditor (&p),
-      audioProcessor (p),
-      scope (p),
-      oscAPreview (p.getWavetableBank(), p.apvts.getRawParameterValue (ParamIDs::oscA_wave)),
-      oscBPreview (p.getWavetableBank(), p.apvts.getRawParameterValue (ParamIDs::oscB_wave)),
-      midiKeyboard (p.keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard)
+void SimpleMidiKeyboard::mouseDown (const juce::MouseEvent& e)
 {
-    setLookAndFeel (&customLookAndFeel);
-
-    auto& apvts = audioProcessor.apvts;
-
-    // Верхняя панель
-    addAndMakeVisible (presetBox);
-    presetBox.onChange = [this]
+    int note = noteAtPosition (e.position);
+    if (note >= 0)
     {
-        if (presetBox.getSelectedId() > 0)
-            audioProcessor.loadPreset (presetBox.getText());
-    };
-    refreshPresetBox();
+        activeNote = note;
+        keyboardState.noteOn (1, activeNote, 0.9f);
+        repaint();
+    }
+}
 
-    addAndMakeVisible (savePresetBtn);
-    savePresetBtn.onClick = [this] { savePresetDialog(); };
-
-    addAndMakeVisible (initPresetBtn);
-    initPresetBtn.onClick = [this]
+void SimpleMidiKeyboard::mouseDrag (const juce::MouseEvent& e)
+{
+    int note = noteAtPosition (e.position);
+    if (note != activeNote)
     {
+        if (activeNote >= 0)
+            keyboardState.noteOff (1, activeNote, 0.0f);
+        activeNote = note;
+        if (activeNote >= 0)
+            keyboardState.noteOn (1, activeNote, 0.9f);
