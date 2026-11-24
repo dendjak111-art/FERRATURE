@@ -1,13 +1,52 @@
 #pragma once
 
+#include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <juce_gui_basics/juce_gui_basics.h>
 #include "PluginProcessor.h"
-#include "CustomLookAndFeel.h"
 
-class FerratureScope : public juce::Component
+#include <array>
+#include <memory>
+#include <vector>
+
+//==============================================================================
+// Кастомный стиль (LookAndFeel) для современных ручек и выпадающих списков
+//==============================================================================
+class FerratureLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    explicit FerratureScope (FerratureAudioProcessor& p) : processor (p) {}
+    FerratureLookAndFeel();
+
+    void drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
+                           float sliderPosProportional, float rotaryStartAngle,
+                           float rotaryEndAngle, juce::Slider& slider) override;
+
+    void drawComboBox (juce::Graphics& g, int width, int height, bool isButtonDown,
+                       int buttonX, int buttonY, int buttonW, int buttonH,
+                       juce::ComboBox& box) override;
+};
+
+//==============================================================================
+// Компонент превью формы волны для OSC A и OSC B
+//==============================================================================
+class WavePreview : public juce::Component
+{
+public:
+    WavePreview (const WavetableBank& bank, std::atomic<float>* waveParam);
+    void paint (juce::Graphics& g) override;
+
+private:
+    const WavetableBank& wavetableBank;
+    std::atomic<float>* wavePos = nullptr;
+};
+
+//==============================================================================
+// Живой осциллограф
+//==============================================================================
+class OscilloscopeView : public juce::Component
+{
+public:
+    explicit OscilloscopeView (FerratureAudioProcessor& p);
     void paint (juce::Graphics& g) override;
 
 private:
@@ -15,6 +54,43 @@ private:
     std::array<float, 512> buffer {};
 };
 
+//==============================================================================
+// Виджет ручки с подписью (Slider + Label + Attachment)
+//==============================================================================
+struct KnobControl
+{
+    juce::Slider slider;
+    juce::Label label;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
+
+    void init (juce::Component& parent,
+               juce::AudioProcessorValueTreeState& apvts,
+               const juce::String& paramID,
+               const juce::String& name);
+
+    void setBounds (juce::Rectangle<int> area);
+};
+
+//==============================================================================
+// Виджет выпадающего списка с подписью (ComboBox + Label + Attachment)
+//==============================================================================
+struct BoxControl
+{
+    juce::ComboBox box;
+    juce::Label label;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment;
+
+    void init (juce::Component& parent,
+               juce::AudioProcessorValueTreeState& apvts,
+               const juce::String& paramID,
+               const juce::String& name);
+
+    void setBounds (juce::Rectangle<int> area);
+};
+
+//==============================================================================
+// Главный редактор плагина Ferrature
+//==============================================================================
 class FerratureAudioProcessorEditor : public juce::AudioProcessorEditor,
                                       private juce::Timer
 {
@@ -30,58 +106,60 @@ private:
     void refreshPresetBox();
     void loadSampleDialog();
     void savePresetDialog();
-    void loadPresetDialog();
 
     FerratureAudioProcessor& audioProcessor;
-    FerratureLookAndFeel customLnf;
+    FerratureLookAndFeel customLookAndFeel;
 
-    FerratureScope scopeView;
-    juce::MidiKeyboardComponent midiKeyboard;
-
+    // Верхняя панель (Пресеты, Сэмплер, Осциллограф)
     juce::ComboBox presetBox;
-    juce::TextButton savePresetBtn { "SAVE" };
-    juce::TextButton loadPresetBtn { "LOAD" };
-    juce::TextButton initPresetBtn { "INIT" };
-
-    juce::TextButton loadSampleBtn { "LOAD SAMPLE" };
+    juce::TextButton savePresetBtn { "Save" };
+    juce::TextButton initPresetBtn { "Init" };
+    juce::TextButton loadSampleBtn { "Load Sample" };
     juce::TextButton clearSampleBtn { "X" };
     juce::Label sampleNameLabel;
-    juce::ToggleButton smpLoopBtn { "LOOP" };
+    OscilloscopeView scope;
 
-    juce::ComboBox fltTypeBox;
-    juce::ComboBox lfoShapeBox;
-    juce::ComboBox lfoDestBox;
+    // Превью волн осцилляторов
+    WavePreview oscAPreview;
+    WavePreview oscBPreview;
 
-    struct KnobWithLabel
-    {
-        juce::Slider slider;
-        juce::Label label;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
-    };
+    // OSC A
+    KnobControl oscAWave, oscAOct, oscAUni, oscADetune, oscAPan, oscALevel;
 
-    KnobWithLabel oscAWave, oscAOct, oscAUni, oscADetune, oscAPan, oscALevel;
-    KnobWithLabel oscBWave, oscBOct, oscBUni, oscBDetune, oscBPan, oscBLevel;
-    KnobWithLabel smpLevel, smpStart, smpEnd, smpRoot;
-    KnobWithLabel fltCutoff, fltRes, fltDrive, fltEnvAmt;
-    KnobWithLabel aenvA, aenvD, aenvS, aenvR;
-    KnobWithLabel fenvA, fenvD, fenvS, fenvR;
-    KnobWithLabel lfoRate, lfoDepth;
-    KnobWithLabel chorusRate, chorusDepth, chorusMix;
-    KnobWithLabel delayTime, delayFb, delayMix;
-    KnobWithLabel reverbSize, reverbDamp, reverbMix;
-    KnobWithLabel masterGain;
+    // OSC B
+    KnobControl oscBWave, oscBOct, oscBUni, oscBDetune, oscBPan, oscBLevel;
 
-    using ComboAttachment  = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
-    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+    // Sampler
+    KnobControl smpLevel, smpStart, smpEnd, smpRoot;
+    juce::ToggleButton smpLoopBtn { "Loop" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> smpLoopAtt;
 
-    std::unique_ptr<ButtonAttachment> smpLoopAtt;
-    std::unique_ptr<ComboAttachment>  fltTypeAtt;
-    std::unique_ptr<ComboAttachment>  lfoShapeAtt;
-    std::unique_ptr<ComboAttachment>  lfoDestAtt;
+    // Filter
+    BoxControl fltType;
+    KnobControl fltCutoff, fltRes, fltDrive, fltEnvAmt;
+
+    // Amp Envelope
+    KnobControl aenvA, aenvD, aenvS, aenvR;
+
+    // Filter Envelope
+    KnobControl fenvA, fenvD, fenvS, fenvR;
+
+    // LFO
+    BoxControl lfoShape, lfoDest;
+    KnobControl lfoRate, lfoDepth;
+
+    // FX
+    KnobControl chorusRate, chorusDepth, chorusMix;
+    KnobControl delayTime, delayFb, delayMix;
+    KnobControl reverbSize, reverbDamp, reverbMix;
+
+    // Master
+    KnobControl masterGain;
+
+    // Клавиатура
+    juce::MidiKeyboardComponent midiKeyboard;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
-
-    void setupKnob (KnobWithLabel& k, const juce::String& name, const char* paramID, bool isCyan = false);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FerratureAudioProcessorEditor)
 };
