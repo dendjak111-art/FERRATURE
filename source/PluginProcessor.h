@@ -224,3 +224,47 @@ public:
 
     //== Preset manager (message thread) =======================================
     static juce::File getPresetDirectory();
+static juce::StringArray getPresetNames();
+    bool savePreset (const juce::String& name);
+    bool loadPreset (const juce::String& name);
+    bool saveToFile (const juce::File& file, const juce::String& presetName = {});
+    bool loadFromFile (const juce::File& file);
+    void initPreset();
+    juce::String getCurrentPresetName() const { return currentPresetName; }
+
+    //== Visual / UI state =====================================================
+    juce::MidiKeyboardState keyboardState;
+    const WavetableBank& getWavetableBank() const noexcept { return bank; }
+    void copyScope (float* dest, int num) const;
+
+private:
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    void loadStateFromXml (const juce::XmlElement& xml);
+    void publishSample (std::shared_ptr<const SampleData> newSample);
+    void restoreSampleFromState();
+
+    WavetableBank bank;
+    VoiceContext ctx;
+    juce::Synthesiser synth;
+
+    juce::AudioFormatManager formatManager;
+    juce::SpinLock sampleLock;
+    std::shared_ptr<const SampleData> currentSample;
+    std::shared_ptr<const SampleData> audioSample;
+    std::vector<std::shared_ptr<const SampleData>> retiredSamples;
+    juce::String loadedSamplePath;
+    juce::String currentPresetName { "Init" };
+
+    double currentSampleRate = 44100.0;
+    float lastMasterGain = 0.7f;
+
+    juce::dsp::Chorus<float> chorus;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> delayLine;
+    juce::SmoothedValue<float> delaySamplesSmoothed;
+    juce::dsp::Reverb reverb;
+
+    std::array<std::atomic<float>, scopeSize> scopeData {};
+    std::atomic<int> scopeWritePos { 0 };
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FerratureAudioProcessor)
+};
