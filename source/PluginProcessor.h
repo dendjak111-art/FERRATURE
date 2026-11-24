@@ -238,7 +238,6 @@ static juce::StringArray getPresetNames();
     void copyScope (float* dest, int num) const;
 
 private:
-    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void loadStateFromXml (const juce::XmlElement& xml);
     void publishSample (std::shared_ptr<const SampleData> newSample);
     void restoreSampleFromState();
