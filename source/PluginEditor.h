@@ -1,7 +1,6 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
-#include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "PluginProcessor.h"
 
@@ -10,7 +9,7 @@
 #include <vector>
 
 //==============================================================================
-// Кастомный стиль (LookAndFeel) для современных ручек и выпадающих списков
+// Кастомный стиль (LookAndFeel)
 //==============================================================================
 class FerratureLookAndFeel : public juce::LookAndFeel_V4
 {
@@ -27,7 +26,7 @@ public:
 };
 
 //==============================================================================
-// Компонент превью формы волны для OSC A и OSC B
+// Превью формы волны для OSC A и OSC B
 //==============================================================================
 class WavePreview : public juce::Component
 {
@@ -55,7 +54,27 @@ private:
 };
 
 //==============================================================================
-// Виджет ручки с подписью (Slider + Label + Attachment)
+// Встроенная экранная MIDI-клавиатура (не требует дополнительных модулей JUCE)
+//==============================================================================
+class SimpleMidiKeyboard : public juce::Component
+{
+public:
+    explicit SimpleMidiKeyboard (juce::MidiKeyboardState& state);
+    void paint (juce::Graphics& g) override;
+    void mouseDown (const juce::MouseEvent& e) override;
+    void mouseDrag (const juce::MouseEvent& e) override;
+    void mouseUp (const juce::MouseEvent& e) override;
+
+private:
+    int noteAtPosition (juce::Point<float> pos) const;
+    juce::MidiKeyboardState& keyboardState;
+    int activeNote = -1;
+    static constexpr int startNote = 48; // C3
+    static constexpr int numOctaves = 3; // 3 октавы (C3 - B5)
+};
+
+//==============================================================================
+// Виджет ручки с подписью
 //==============================================================================
 struct KnobControl
 {
@@ -72,7 +91,7 @@ struct KnobControl
 };
 
 //==============================================================================
-// Виджет выпадающего списка с подписью (ComboBox + Label + Attachment)
+// Виджет выпадающего списка с подписью
 //==============================================================================
 struct BoxControl
 {
@@ -110,7 +129,7 @@ private:
     FerratureAudioProcessor& audioProcessor;
     FerratureLookAndFeel customLookAndFeel;
 
-    // Верхняя панель (Пресеты, Сэмплер, Осциллограф)
+    // Верхняя панель
     juce::ComboBox presetBox;
     juce::TextButton savePresetBtn { "Save" };
     juce::TextButton initPresetBtn { "Init" };
@@ -119,7 +138,7 @@ private:
     juce::Label sampleNameLabel;
     OscilloscopeView scope;
 
-    // Превью волн осцилляторов
+    // Превью волн
     WavePreview oscAPreview;
     WavePreview oscBPreview;
 
@@ -157,7 +176,7 @@ private:
     KnobControl masterGain;
 
     // Клавиатура
-    juce::MidiKeyboardComponent midiKeyboard;
+    SimpleMidiKeyboard midiKeyboard;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 
