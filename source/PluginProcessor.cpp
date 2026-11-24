@@ -224,3 +224,392 @@ namespace
             const float lfoInc = lfoRate / (float) sr;
 
             // --- per-sample loop ---------------------------------------------
+            for (int i = 0; i < numSamples; ++i)
+            {
+                const float ae = ampEnv.getNextSample();
+                if (! ampEnv.isActive())
+                {
+                    clearCurrentNote();
+                    return;
+                }
+
+                const float fe  = filtEnv.getNextSample();
+                const float lfo = nextLfo (lfoInc, lfoShape);
+
+                if ((ctrlCounter++ & 15) == 0)   // control rate: every 16 samples
+                {
+                    float wA = waveA, wB = waveB;
+                    if (lfoDest == 1)
+                    {
+                        const float mod = lfo * lfoDepth * 0.5f;
+                        wA += mod; wB += mod;
+                    }
+                    mA = WavetableBank::makeMorph (wA);
+                    mB = WavetableBank::makeMorph (wB);
+
+                    float octaves = envAmt * fe * 5.0f;
+                    if (lfoDest == 0) octaves += lfo * lfoDepth * 3.0f;
+                    const float cut = juce::jlimit (20.0f, (float) (0.49 * sr), cutoff * std::exp2 (octaves));
+                    filter.setCutoffFrequency (cut);
+                }
+
+                float l = 0.0f, r = 0.0f;
+                renderOsc (oscs[0], mA, l, r);
+                renderOsc (oscs[1], mB, l, r);
+
+                if (smpRun)
+                {
+                    if (smpPos >= (double) smpEnd)
+                    {
+                        if (smpLoop) smpPos = (double) smpStart + std::fmod (smpPos - (double) smpStart, (double) (smpEnd - smpStart));
+                        else         { smpRun = false; smpActive = false; }
+                    }
+
+                    if (smpRun)
+                    {
+                        const int i0    = juce::jlimit (0, smpLen - 1, (int) smpPos);
+                        const int i1    = juce::jmin (i0 + 1, smpLen - 1);
+                        const float fr  = (float) (smpPos - (double) i0);
+                        l += (smpL[i0] + fr * (smpL[i1] - smpL[i0])) * smpLevel;
+                        r += (smpR[i0] + fr * (smpR[i1] - smpR[i0])) * smpLevel;
+                        smpPos += smpStep;
+                    }
+                }
+
+                if (useDrive)
+                {
+                    l = std::tanh (l * driveGain);
+                    r = std::tanh (r * driveGain);
+                }
+
+                l = filter.processSample (0, l);
+                r = filter.processSample (1, r);
+
+                const float g = ae * vel * 0.3f;
+                outL[i] += l * g;
+                if (outR != nullptr) outR[i] += r * g;
+            }
+        }
+
+    private:
+        static constexpr int kMaxUni = 7;
+
+        struct Osc
+        {
+            float phase[kMaxUni] {};
+            float inc[kMaxUni] {};
+            float gl[kMaxUni] {};
+            float gr[kMaxUni] {};
+            int   uni   = 1;
+            int   table = 0;
+            float level = 0.0f;
+        };
+
+        void setupOsc (Osc& o, float octave, int uni, float detuneCents, float pan, float level, double baseHz, double sr)
+        {
+            o.uni   = juce::jlimit (1, kMaxUni, uni);
+            o.level = level;
+            const float norm = 1.0f / std::sqrt ((float) o.uni);
+            float maxF = 0.0f;
+
+            for (int u = 0; u < o.uni; ++u)
+            {
+                const float pos   = o.uni > 1 ? ((float) u / (float) (o.uni - 1)) * 2.0f - 1.0f : 0.0f;
+                const double f    = baseHz * std::pow (2.0, (double) octave + (double) (pos * detuneCents) / 1200.0);
+                o.inc[u]          = (float) (f / sr);
+                maxF              = juce::jmax (maxF, (float) f);
+
+                const float p     = juce::jlimit (-1.0f, 1.0f, pan + pos * 0.75f);
+                const float angle = (p + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
+                o.gl[u]           = std::cos (angle) * norm;
+                o.gr[u]           = std::sin (angle) * norm;
+            }
+            o.table = ctx.bank->levelForFrequency (maxF, sr);
+        }
+
+        void renderOsc (Osc& o, const WavetableBank::Morph& m, float& l, float& r) noexcept
+        {
+            if (o.level < 1.0e-4f) return;
+
+            float tl = 0.0f, tr = 0.0f;
+            for (int u = 0; u < o.uni; ++u)
+            {
+                const float v = ctx.bank->read (m, o.table, o.phase[u]);
+                tl += v * o.gl[u];
+                tr += v * o.gr[u];
+                o.phase[u] += o.inc[u];
+                if (o.phase[u] >= 1.0f) o.phase[u] -= 1.0f;
+            }
+            l += tl * o.level;
+            r += tr * o.level;
+        }
+
+        float nextLfo (float inc, int shape) noexcept
+        {
+            lfoPhase += inc;
+            if (lfoPhase >= 1.0f)
+            {
+                lfoPhase -= 1.0f;
+                shValue = rng.nextFloat() * 2.0f - 1.0f;
+            }
+
+            switch (shape)
+            {
+                case 0:  return std::sin (juce::MathConstants<float>::twoPi * lfoPhase);
+                case 1:  return 2.0f * std::abs (2.0f * lfoPhase - 1.0f) - 1.0f;
+                case 2:  return 2.0f * lfoPhase - 1.0f;
+                case 3:  return lfoPhase < 0.5f ? 1.0f : -1.0f;
+                default: return shValue;
+            }
+        }
+
+        const VoiceContext& ctx;
+        Osc oscs[2];
+        juce::dsp::StateVariableTPTFilter<float> filter;
+        juce::ADSR ampEnv, filtEnv;
+        juce::Random rng;
+
+        int   noteNumber = 60;
+        float vel = 0.0f, pitchBend = 0.0f;
+        float lfoPhase = 0.0f, shValue = 0.0f;
+        int   ctrlCounter = 0;
+        double smpPos = -1.0;
+        bool   smpActive = false;
+    };
+    int detectRootNote (const juce::AudioBuffer<float>& buf, double sr, bool& confident)
+    {
+        confident = false;
+        const int len = buf.getNumSamples();
+        if (sr <= 0.0 || len < 1024) return 60;
+
+        const int maxLag = juce::jmin ((int) (sr / 50.0), len / 2);
+        const int minLag = juce::jmax (2, (int) (sr / 2000.0));
+        int W = 2048;
+        int start = len / 8;
+        if (start + W + maxLag >= len) start = 0;
+        if (start + W + maxLag >= len) W = len - maxLag - 1;
+        if (W < 256 || maxLag <= minLag + 2) return 60;
+
+        const int segLen = W + maxLag + 1;
+        std::vector<float> x ((size_t) segLen, 0.0f);
+        const int chans = buf.getNumChannels();
+        for (int c = 0; c < chans; ++c)
+        {
+            const float* src = buf.getReadPointer (c);
+            for (int i = 0; i < segLen; ++i)
+                x[(size_t) i] += src[start + i] / (float) chans;
+        }
+
+        std::vector<float> cmnd ((size_t) maxLag + 1, 1.0f);
+        float running = 0.0f;
+        for (int tau = 1; tau <= maxLag; ++tau)
+        {
+            float sum = 0.0f;
+            for (int i = 0; i < W; ++i)
+            {
+                const float d = x[(size_t) i] - x[(size_t) (i + tau)];
+                sum += d * d;
+            }
+            running += sum;
+            cmnd[(size_t) tau] = running > 0.0f ? sum * (float) tau / running : 1.0f;
+        }
+
+        int best = -1;
+        for (int tau = minLag; tau < maxLag; ++tau)
+        {
+            if (cmnd[(size_t) tau] < 0.15f)
+            {
+                while (tau + 1 < maxLag && cmnd[(size_t) tau + 1] < cmnd[(size_t) tau]) ++tau;
+                best = tau;
+                break;
+            }
+        }
+        if (best < 0)
+        {
+            float mn = 1.0e9f;
+            for (int tau = minLag; tau < maxLag; ++tau)
+                if (cmnd[(size_t) tau] < mn) { mn = cmnd[(size_t) tau]; best = tau; }
+        }
+        if (best < 1 || cmnd[(size_t) best] > 0.4f) return 60;
+
+        float tauF = (float) best;
+        if (best > 1 && best < maxLag)
+        {
+            const float a = cmnd[(size_t) best - 1], b = cmnd[(size_t) best], c = cmnd[(size_t) best + 1];
+            const float denom = a - 2.0f * b + c;
+            if (std::abs (denom) > 1.0e-9f) tauF += 0.5f * (a - c) / denom;
+        }
+
+        const double freq = sr / (double) tauF;
+        const double midi = 69.0 + 12.0 * std::log2 (freq / 440.0);
+        confident = true;
+        return juce::jlimit (0, 127, (int) std::lround (midi));
+    }
+}
+
+//==============================================================================
+// Processor
+//==============================================================================
+juce::AudioProcessorValueTreeState::ParameterLayout FerratureAudioProcessor::createParameterLayout()
+{
+    juce::AudioProcessorValueTreeState::ParameterLayout layout;
+
+    auto addF = [&] (const char* id, const juce::String& name, float lo, float hi, float def,
+                     float skew = 1.0f, const juce::String& unit = {})
+    {
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { id, 1 }, name,
+            juce::NormalisableRange<float> (lo, hi, 0.0f, skew), def,
+            juce::AudioParameterFloatAttributes().withLabel (unit)));
+    };
+    auto addI = [&] (const char* id, const juce::String& name, int lo, int hi, int def)
+    {
+        layout.add (std::make_unique<juce::AudioParameterInt> (juce::ParameterID { id, 1 }, name, lo, hi, def));
+    };
+    auto addC = [&] (const char* id, const juce::String& name, const juce::StringArray& choices, int def)
+    {
+        layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id, 1 }, name, choices, def));
+    };
+    auto addB = [&] (const char* id, const juce::String& name, bool def)
+    {
+        layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id, 1 }, name, def));
+    };
+
+    addF (ParamIDs::oscA_wave,   "A Wave",   0.0f, 1.0f, 0.5f);
+    addI (ParamIDs::oscA_oct,    "A Octave", -3, 3, 0);
+    addI (ParamIDs::oscA_uni,    "A Unison", 1, 7, 1);
+    addF (ParamIDs::oscA_detune, "A Detune", 0.0f, 100.0f, 20.0f, 1.0f, "ct");
+    addF (ParamIDs::oscA_pan,    "A Pan",   -1.0f, 1.0f, 0.0f);
+    addF (ParamIDs::oscA_level,  "A Level",  0.0f, 1.0f, 0.8f);
+
+    addF (ParamIDs::oscB_wave,   "B Wave",   0.0f, 1.0f, 0.75f);
+    addI (ParamIDs::oscB_oct,    "B Octave", -3, 3, 0);
+    addI (ParamIDs::oscB_uni,    "B Unison", 1, 7, 1);
+    addF (ParamIDs::oscB_detune, "B Detune", 0.0f, 100.0f, 20.0f, 1.0f, "ct");
+    addF (ParamIDs::oscB_pan,    "B Pan",   -1.0f, 1.0f, 0.0f);
+    addF (ParamIDs::oscB_level,  "B Level",  0.0f, 1.0f, 0.0f);
+
+    addF (ParamIDs::smp_level,   "Sampler Level", 0.0f, 1.0f, 0.8f);
+    addF (ParamIDs::smp_start,   "Sample Start",  0.0f, 1.0f, 0.0f);
+    addF (ParamIDs::smp_end,     "Sample End",    0.0f, 1.0f, 1.0f);
+    addB (ParamIDs::smp_loop,    "Sample Loop",   false);
+    addI (ParamIDs::smp_root,    "Sample Root",   0, 127, 60);
+
+    addC (ParamIDs::flt_type,    "Filter Type", { "LowPass", "HighPass", "BandPass" }, 0);
+    addF (ParamIDs::flt_cutoff,  "Cutoff",    20.0f, 20000.0f, 12000.0f, 0.3f, "Hz");
+    addF (ParamIDs::flt_res,     "Resonance", 0.5f, 10.0f, 0.707f, 0.5f);
+    addF (ParamIDs::flt_drive,   "Drive",     0.0f, 1.0f, 0.0f);
+    addF (ParamIDs::flt_envamt,  "Env Amount", -1.0f, 1.0f, 0.0f);
+
+    addF (ParamIDs::aenv_a, "Amp Attack",  0.001f, 5.0f, 0.005f, 0.35f, "s");
+    addF (ParamIDs::aenv_d, "Amp Decay",   0.001f, 5.0f, 0.3f,   0.35f, "s");
+    addF (ParamIDs::aenv_s, "Amp Sustain", 0.0f,   1.0f, 0.8f);
+    addF (ParamIDs::aenv_r, "Amp Release", 0.001f, 8.0f, 0.2f,   0.35f, "s");
+    addF (ParamIDs::fenv_a, "Mod Attack",  0.001f, 5.0f, 0.005f, 0.35f, "s");
+    addF (ParamIDs::fenv_d, "Mod Decay",   0.001f, 5.0f, 0.4f,   0.35f, "s");
+    addF (ParamIDs::fenv_s, "Mod Sustain", 0.0f,   1.0f, 0.3f);
+    addF (ParamIDs::fenv_r, "Mod Release", 0.001f, 8.0f, 0.3f,   0.35f, "s");
+
+    addC (ParamIDs::lfo_shape, "LFO Shape", { "Sine", "Triangle", "Saw", "Square", "S&H" }, 0);
+    addF (ParamIDs::lfo_rate,  "LFO Rate",  0.05f, 20.0f, 2.0f, 0.4f, "Hz");
+    addF (ParamIDs::lfo_depth, "LFO Depth", 0.0f, 1.0f, 0.0f);
+    addC (ParamIDs::lfo_dest,  "LFO Dest",  { "Cutoff", "WT Position" }, 0);
+
+    addF (ParamIDs::fx_chorus_rate,  "Chorus Rate",  0.1f, 5.0f, 0.8f, 0.5f, "Hz");
+    addF (ParamIDs::fx_chorus_depth, "Chorus Depth", 0.0f, 1.0f, 0.4f);
+    addF (ParamIDs::fx_chorus_mix,   "Chorus Mix",   0.0f, 1.0f, 0.0f);
+    addF (ParamIDs::fx_delay_time,   "Delay Time",   1.0f, 1500.0f, 350.0f, 0.5f, "ms");
+    addF (ParamIDs::fx_delay_fb,     "Delay Feedback", 0.0f, 0.95f, 0.35f);
+    addF (ParamIDs::fx_delay_mix,    "Delay Mix",    0.0f, 1.0f, 0.0f);
+    addF (ParamIDs::fx_reverb_size,  "Reverb Size",  0.0f, 1.0f, 0.5f);
+    addF (ParamIDs::fx_reverb_damp,  "Reverb Damp",  0.0f, 1.0f, 0.5f);
+    addF (ParamIDs::fx_reverb_mix,   "Reverb Mix",   0.0f, 1.0f, 0.0f);
+
+    addF (ParamIDs::master_gain, "Master", 0.0f, 1.5f, 0.7f);
+
+    return layout;
+}
+
+FerratureAudioProcessor::FerratureAudioProcessor()
+    : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+      apvts (*this, nullptr, "FERRATURE_STATE", createParameterLayout())
+{
+    formatManager.registerBasicFormats();
+
+    ctx.p.bind (apvts);
+    ctx.bank = &bank;
+
+    for (int i = 0; i < numVoices; ++i)
+        synth.addVoice (new FerratureVoice (ctx));
+    synth.addSound (new FerratureSound());
+
+    for (auto& s : scopeData) s.store (0.0f);
+
+    apvts.state.setProperty ("presetName", "Init", nullptr);
+}
+
+FerratureAudioProcessor::~FerratureAudioProcessor() {}
+
+bool FerratureAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+{
+    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+}
+
+void FerratureAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
+{
+    currentSampleRate = sampleRate;
+    synth.setCurrentPlaybackSampleRate (sampleRate);
+
+    juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) samplesPerBlock, 2u };
+
+    chorus.prepare (spec);
+    chorus.setCentreDelay (7.0f);
+    chorus.setFeedback (0.0f);
+    chorus.reset();
+
+    delayLine.setMaximumDelayInSamples ((int) (sampleRate * 2.0) + 4);
+    delayLine.prepare (spec);
+    delayLine.reset();
+    delaySamplesSmoothed.reset (sampleRate, 0.05);
+    delaySamplesSmoothed.setCurrentAndTargetValue (ctx.p.fx_delay_time->load() * 0.001f * (float) sampleRate);
+
+    reverb.prepare (spec);
+    reverb.reset();
+
+    lastMasterGain = ctx.p.master_gain->load();
+}
+
+void FerratureAudioProcessor::releaseResources() {}
+
+void FerratureAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+{
+    juce::ScopedNoDenormals noDenormals;
+    const int n = buffer.getNumSamples();
+    buffer.clear();
+
+    {
+        juce::SpinLock::ScopedTryLockType tl (sampleLock);
+        if (tl.isLocked() && audioSample != currentSample)
+            audioSample = currentSample;
+    }
+    ctx.sample = audioSample.get();
+
+    keyboardState.processNextMidiBuffer (midi, 0, n, true);
+    synth.renderNextBlock (buffer, midi, 0, n);
+
+    const int numCh = juce::jmin (2, buffer.getNumChannels());
+
+    const float chorusMix = ctx.p.fx_chorus_mix->load();
+    if (chorusMix > 0.001f && numCh == 2)
+    {
+        chorus.setRate  (ctx.p.fx_chorus_rate->load());
+        chorus.setDepth (ctx.p.fx_chorus_depth->load());
+        chorus.setMix   (chorusMix);
+        juce::dsp::AudioBlock<float> block (buffer);
+        chorus.process (juce::dsp::ProcessContextReplacing<float> (block));
+    }
+
+    const float delayMix = ctx.p.fx_delay_mix->load();
+    if (delayMix > 0.001f)
+    {
+        const float fb = ctx.p.fx_delay_fb->load();
