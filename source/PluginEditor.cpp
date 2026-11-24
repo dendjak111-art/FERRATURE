@@ -519,3 +519,164 @@ void FerratureAudioProcessorEditor::paint (juce::Graphics& g)
         g.setColour (Colors::panelBg);
         g.fillRoundedRectangle (f, 6.0f);
         g.setColour (Colors::panelBorder);
+        g.drawRoundedRectangle (f.reduced (0.5f), 6.0f, 1.0f);
+
+        g.setColour (Colors::accent);
+        g.setFont (juce::Font (12.0f, juce::Font::bold));
+        g.drawText (title, bounds.reduced (10, 4).removeFromTop (18), juce::Justification::centredLeft);
+    };
+
+    auto area = getLocalBounds().reduced (8);
+    auto topBar = area.removeFromTop (54);
+
+    g.setColour (Colors::textMain);
+    g.setFont (juce::Font (22.0f, juce::Font::bold));
+    g.drawText ("FERRATURE", topBar.removeFromLeft (150), juce::Justification::centredLeft);
+
+    area.removeFromTop (6);
+    area.removeFromBottom (68);
+    area.removeFromBottom (6);
+
+    int rowH = area.getHeight() / 3;
+    auto row1 = area.removeFromTop (rowH).reduced (0, 3);
+    auto row2 = area.removeFromTop (rowH).reduced (0, 3);
+    auto row3 = area.reduced (0, 3);
+
+    int w3 = row1.getWidth() / 3;
+    drawSection (row1.removeFromLeft (w3).reduced (3, 0), "OSC A");
+    drawSection (row1.removeFromLeft (w3).reduced (3, 0), "OSC B");
+    drawSection (row1.reduced (3, 0), "SAMPLER");
+
+    drawSection (row2.removeFromLeft (w3).reduced (3, 0), "FILTER");
+    drawSection (row2.removeFromLeft (w3).reduced (3, 0), "AMP ENVELOPE");
+    drawSection (row2.reduced (3, 0), "FILTER ENVELOPE");
+
+    int lfoW = row3.getWidth() / 4;
+    int masterW = 110;
+    drawSection (row3.removeFromLeft (lfoW).reduced (3, 0), "LFO");
+    drawSection (row3.removeFromRight (masterW).reduced (3, 0), "OUT");
+    drawSection (row3.reduced (3, 0), "EFFECTS");
+}
+
+void FerratureAudioProcessorEditor::resized()
+{
+    auto area = getLocalBounds().reduced (8);
+
+    auto topBar = area.removeFromTop (54);
+    topBar.removeFromLeft (155);
+
+    presetBox.setBounds (topBar.removeFromLeft (160).reduced (2, 12));
+    savePresetBtn.setBounds (topBar.removeFromLeft (55).reduced (2, 12));
+    initPresetBtn.setBounds (topBar.removeFromLeft (50).reduced (2, 12));
+    topBar.removeFromLeft (12);
+
+    loadSampleBtn.setBounds (topBar.removeFromLeft (95).reduced (2, 12));
+    clearSampleBtn.setBounds (topBar.removeFromLeft (28).reduced (2, 12));
+    sampleNameLabel.setBounds (topBar.removeFromLeft (180).reduced (6, 12));
+
+    scope.setBounds (topBar.reduced (4, 4));
+
+    area.removeFromTop (6);
+
+    midiKeyboard.setBounds (area.removeFromBottom (68));
+    area.removeFromBottom (6);
+
+    int rowH = area.getHeight() / 3;
+    auto row1 = area.removeFromTop (rowH).reduced (0, 3);
+    auto row2 = area.removeFromTop (rowH).reduced (0, 3);
+    auto row3 = area.reduced (0, 3);
+
+    int w3 = row1.getWidth() / 3;
+
+    // OSC A
+    auto oscAArea = row1.removeFromLeft (w3).reduced (8, 6);
+    oscAArea.removeFromTop (18);
+    oscAPreview.setBounds (oscAArea.removeFromLeft (75).reduced (2, 10));
+    int kw = oscAArea.getWidth() / 6;
+    oscAWave.setBounds (oscAArea.removeFromLeft (kw));
+    oscAOct.setBounds (oscAArea.removeFromLeft (kw));
+    oscAUni.setBounds (oscAArea.removeFromLeft (kw));
+    oscADetune.setBounds (oscAArea.removeFromLeft (kw));
+    oscAPan.setBounds (oscAArea.removeFromLeft (kw));
+    oscALevel.setBounds (oscAArea);
+
+    // OSC B
+    auto oscBArea = row1.removeFromLeft (w3).reduced (8, 6);
+    oscBArea.removeFromTop (18);
+    oscBPreview.setBounds (oscBArea.removeFromLeft (75).reduced (2, 10));
+    oscBWave.setBounds (oscBArea.removeFromLeft (kw));
+    oscBOct.setBounds (oscBArea.removeFromLeft (kw));
+    oscBUni.setBounds (oscBArea.removeFromLeft (kw));
+    oscBDetune.setBounds (oscBArea.removeFromLeft (kw));
+    oscBPan.setBounds (oscBArea.removeFromLeft (kw));
+    oscBLevel.setBounds (oscBArea);
+
+    // SAMPLER
+    auto smpArea = row1.reduced (8, 6);
+    smpArea.removeFromTop (18);
+    int sw = smpArea.getWidth() / 5;
+    smpLevel.setBounds (smpArea.removeFromLeft (sw));
+    smpStart.setBounds (smpArea.removeFromLeft (sw));
+    smpEnd.setBounds (smpArea.removeFromLeft (sw));
+    smpRoot.setBounds (smpArea.removeFromLeft (sw));
+    smpLoopBtn.setBounds (smpArea.reduced (4, 24));
+
+    // FILTER
+    auto fltArea = row2.removeFromLeft (w3).reduced (8, 6);
+    fltArea.removeFromTop (18);
+    fltType.setBounds (fltArea.removeFromLeft (85));
+    int fw = fltArea.getWidth() / 4;
+    fltCutoff.setBounds (fltArea.removeFromLeft (fw));
+    fltRes.setBounds (fltArea.removeFromLeft (fw));
+    fltDrive.setBounds (fltArea.removeFromLeft (fw));
+    fltEnvAmt.setBounds (fltArea);
+
+    // AMP ENV
+    auto aenvArea = row2.removeFromLeft (w3).reduced (8, 6);
+    aenvArea.removeFromTop (18);
+    int ew = aenvArea.getWidth() / 4;
+    aenvA.setBounds (aenvArea.removeFromLeft (ew));
+    aenvD.setBounds (aenvArea.removeFromLeft (ew));
+    aenvS.setBounds (aenvArea.removeFromLeft (ew));
+    aenvR.setBounds (aenvArea);
+
+    // FILTER ENV
+    auto fenvArea = row2.reduced (8, 6);
+    fenvArea.removeFromTop (18);
+    fenvA.setBounds (fenvArea.removeFromLeft (ew));
+    fenvD.setBounds (fenvArea.removeFromLeft (ew));
+    fenvS.setBounds (fenvArea.removeFromLeft (ew));
+    fenvR.setBounds (fenvArea);
+
+    // LFO
+    int lfoW = row3.getWidth() / 4;
+    int masterW = 110;
+
+    auto lfoArea = row3.removeFromLeft (lfoW).reduced (8, 6);
+    lfoArea.removeFromTop (18);
+    auto lfoBoxes = lfoArea.removeFromLeft (90);
+    lfoShape.setBounds (lfoBoxes.removeFromTop (lfoBoxes.getHeight() / 2));
+    lfoDest.setBounds (lfoBoxes);
+    int lw = lfoArea.getWidth() / 2;
+    lfoRate.setBounds (lfoArea.removeFromLeft (lw));
+    lfoDepth.setBounds (lfoArea);
+
+    // MASTER
+    auto masterArea = row3.removeFromRight (masterW).reduced (8, 6);
+    masterArea.removeFromTop (18);
+    masterGain.setBounds (masterArea);
+
+    // FX
+    auto fxArea = row3.reduced (8, 6);
+    fxArea.removeFromTop (18);
+    int fxw = fxArea.getWidth() / 9;
+    chorusRate.setBounds (fxArea.removeFromLeft (fxw));
+    chorusDepth.setBounds (fxArea.removeFromLeft (fxw));
+    chorusMix.setBounds (fxArea.removeFromLeft (fxw));
+    delayTime.setBounds (fxArea.removeFromLeft (fxw));
+    delayFb.setBounds (fxArea.removeFromLeft (fxw));
+    delayMix.setBounds (fxArea.removeFromLeft (fxw));
+    reverbSize.setBounds (fxArea.removeFromLeft (fxw));
+    reverbDamp.setBounds (fxArea.removeFromLeft (fxw));
+    reverbMix.setBounds (fxArea);
+}
