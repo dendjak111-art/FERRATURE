@@ -613,3 +613,245 @@ void FerratureAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     if (delayMix > 0.001f)
     {
         const float fb = ctx.p.fx_delay_fb->load();
+        delaySamplesSmoothed.setTargetValue (juce::jlimit (1.0f, (float) (currentSampleRate * 2.0),
+                                                           ctx.p.fx_delay_time->load() * 0.001f * (float) currentSampleRate));
+        float* ch[] = { buffer.getWritePointer (0), numCh > 1 ? buffer.getWritePointer (1) : nullptr };
+
+        for (int i = 0; i < n; ++i)
+        {
+            const float d = delaySamplesSmoothed.getNextValue();
+            for (int c = 0; c < numCh; ++c)
+            {
+                const float in      = ch[c][i];
+                const float delayed = delayLine.popSample (c, d, true);
+                delayLine.pushSample (c, in + delayed * fb);
+                ch[c][i] = in + delayed * delayMix;
+            }
+        }
+    }
+
+    const float revMix = ctx.p.fx_reverb_mix->load();
+    if (revMix > 0.001f && numCh == 2)
+    {
+        juce::dsp::Reverb::Parameters rp;
+        rp.roomSize   = ctx.p.fx_reverb_size->load();
+        rp.damping    = ctx.p.fx_reverb_damp->load();
+        rp.wetLevel   = revMix;
+        rp.dryLevel   = 1.0f - revMix * 0.5f;
+        rp.width      = 1.0f;
+        rp.freezeMode = 0.0f;
+        reverb.setParameters (rp);
+        juce::dsp::AudioBlock<float> block (buffer);
+        reverb.process (juce::dsp::ProcessContextReplacing<float> (block));
+    }
+
+    const float g = ctx.p.master_gain->load();
+    buffer.applyGainRamp (0, n, lastMasterGain, g);
+    lastMasterGain = g;
+
+    for (int c = 0; c < buffer.getNumChannels(); ++c)
+    {
+        float* d = buffer.getWritePointer (c);
+        for (int i = 0; i < n; ++i)
+            d[i] = juce::jlimit (-1.0f, 1.0f, d[i]);
+    }
+
+    int w = scopeWritePos.load (std::memory_order_relaxed);
+    const float* l = buffer.getReadPointer (0);
+    const float* r = buffer.getNumChannels() > 1 ? buffer.getReadPointer (1) : l;
+    for (int i = 0; i < n; ++i)
+    {
+        scopeData[(size_t) w].store (0.5f * (l[i] + r[i]), std::memory_order_relaxed);
+        w = (w + 1) & (scopeSize - 1);
+    }
+    scopeWritePos.store (w, std::memory_order_release);
+}
+
+void FerratureAudioProcessor::copyScope (float* dest, int num) const
+{
+    num = juce::jlimit (1, scopeSize, num);
+    const int w = scopeWritePos.load (std::memory_order_acquire);
+    for (int i = 0; i < num; ++i)
+        dest[i] = scopeData[(size_t) ((w - num + i + scopeSize) & (scopeSize - 1))].load (std::memory_order_relaxed);
+}
+
+juce::AudioProcessorEditor* FerratureAudioProcessor::createEditor()
+{
+    return new FerratureAudioProcessorEditor (*this);
+}
+
+void FerratureAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
+{
+    if (auto xml = apvts.copyState().createXml())
+        copyXmlToBinary (*xml, destData);
+}
+
+void FerratureAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
+{
+    if (auto xml = getXmlFromBinary (data, sizeInBytes))
+        if (xml->hasTagName (apvts.state.getType()))
+            loadStateFromXml (*xml);
+}
+
+void FerratureAudioProcessor::loadStateFromXml (const juce::XmlElement& xml)
+{
+    apvts.replaceState (juce::ValueTree::fromXml (xml));
+    restoreSampleFromState();
+
+    const auto name = apvts.state.getProperty ("presetName").toString();
+    currentPresetName = name.isNotEmpty() ? name : juce::String ("Init");
+}
+
+void FerratureAudioProcessor::publishSample (std::shared_ptr<const SampleData> newSample)
+{
+    {
+        const juce::SpinLock::ScopedLockType sl (sampleLock);
+        if (currentSample != nullptr)
+            retiredSamples.push_back (currentSample);
+        currentSample = std::move (newSample);
+    }
+
+    retiredSamples.erase (std::remove_if (retiredSamples.begin(), retiredSamples.end(),
+                                          [] (const auto& p) { return p.use_count() == 1; }),
+                          retiredSamples.end());
+}
+
+bool FerratureAudioProcessor::loadSample (const juce::File& file, bool applyDetectedRoot)
+{
+    if (! file.existsAsFile())
+        return false;
+
+    std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
+    if (reader == nullptr || reader->lengthInSamples <= 0 || reader->sampleRate <= 0.0)
+        return false;
+
+    const int maxLen = (int) juce::jmin<juce::int64> (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 60.0));
+    const int chans  = (int) juce::jmin (2u, reader->numChannels);
+
+    auto data = std::make_shared<SampleData>();
+    data->buffer.setSize (chans, maxLen);
+    data->buffer.clear();
+
+    if (! reader->read (&data->buffer, 0, maxLen, 0, true, chans > 1))
+        return false;
+
+    data->sampleRate = reader->sampleRate;
+    data->name       = file.getFileName();
+
+    bool confident = false;
+    data->detectedRoot = detectRootNote (data->buffer, data->sampleRate, confident);
+
+    const int root = data->detectedRoot;
+    publishSample (std::move (data));
+
+    loadedSamplePath = file.getFullPathName();
+    apvts.state.setProperty ("samplePath", loadedSamplePath, nullptr);
+
+    if (applyDetectedRoot)
+        if (auto* p = apvts.getParameter (ParamIDs::smp_root))
+            p->setValueNotifyingHost (p->convertTo0to1 ((float) root));
+
+    return true;
+}
+
+void FerratureAudioProcessor::clearSample()
+{
+    publishSample (nullptr);
+    loadedSamplePath.clear();
+    apvts.state.removeProperty ("samplePath", nullptr);
+}
+
+void FerratureAudioProcessor::restoreSampleFromState()
+{
+    const juce::String path = apvts.state.getProperty ("samplePath").toString();
+
+    if (path.isEmpty())
+    {
+        if (currentSample != nullptr) clearSample();
+        return;
+    }
+
+    if (path == loadedSamplePath && currentSample != nullptr)
+        return;
+
+    if (! loadSample (juce::File (path), false))
+        clearSample();
+}
+
+juce::File FerratureAudioProcessor::getPresetDirectory()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                   .getChildFile ("Ferrature").getChildFile ("Presets");
+    dir.createDirectory();
+    return dir;
+}
+
+juce::StringArray FerratureAudioProcessor::getPresetNames() const
+{
+    juce::StringArray names;
+    for (const auto& f : getPresetDirectory().findChildFiles (juce::File::findFiles, false, "*.ferrature"))
+        names.add (f.getFileNameWithoutExtension());
+    names.sortNatural();
+    return names;
+}
+
+bool FerratureAudioProcessor::savePreset (const juce::String& name)
+{
+    const auto clean = juce::File::createLegalFileName (name.trim());
+    if (clean.isEmpty())
+        return false;
+    return saveToFile (getPresetDirectory().getChildFile (clean + ".ferrature"), clean);
+}
+
+bool FerratureAudioProcessor::loadPreset (const juce::String& name)
+{
+    return loadFromFile (getPresetDirectory().getChildFile (name + ".ferrature"));
+}
+
+bool FerratureAudioProcessor::saveToFile (const juce::File& file, const juce::String& presetName)
+{
+    const auto name = presetName.isNotEmpty() ? presetName : file.getFileNameWithoutExtension();
+    apvts.state.setProperty ("presetName", name, nullptr);
+
+    auto xml = apvts.copyState().createXml();
+    if (xml == nullptr || ! xml->writeTo (file))
+        return false;
+
+    currentPresetName = name;
+    return true;
+}
+
+bool FerratureAudioProcessor::loadFromFile (const juce::File& file)
+{
+    if (! file.existsAsFile())
+        return false;
+
+    auto xml = juce::parseXML (file);
+    if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
+        return false;
+
+    loadStateFromXml (*xml);
+
+    if (apvts.state.getProperty ("presetName").toString().isEmpty())
+    {
+        currentPresetName = file.getFileNameWithoutExtension();
+        apvts.state.setProperty ("presetName", currentPresetName, nullptr);
+    }
+    return true;
+}
+
+void FerratureAudioProcessor::initPreset()
+{
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            rp->setValueNotifyingHost (rp->getDefaultValue());
+
+    clearSample();
+    currentPresetName = "Init";
+    apvts.state.setProperty ("presetName", currentPresetName, nullptr);
+}
+
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+{
+    return new FerratureAudioProcessor();
+}
